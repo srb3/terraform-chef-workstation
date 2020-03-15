@@ -1,0 +1,421 @@
+%{ if system == "linux" }
+#!/bin/bash
+# ${module_input}
+set -exu
+%{ if wait_for_base }
+until [ -f /setup.lock ]
+do
+  sleep 5
+done
+echo "Bootsrapped lock file found, will continue"
+%{ endif }
+
+path="${tmp_path}/bin"
+if [[ ! -d $path ]]; then
+  sudo mkdir -p $path
+fi
+
+exec > ${tmp_path}/setup_workstion_script.log 2>&1
+
+jq_path="${tmp_path}/bin/jq"
+
+if [[ ! -f $jq_path ]]; then
+  if hash curl; then
+    sudo curl -L -o $jq_path ${jq_url} && sudo chmod 755 $jq_path
+  else
+    sudo wget -O $jq_path ${jq_url} && sudo chmod 755 $jq_path
+  fi
+fi
+
+chef_bin_embedded_path=$(dirname $(ls /opt/*/bin/chef-client | tail -n 1))
+chef_bin_path=$(dirname $(ls /opt/*/embedded/bin/chef-client | tail -n 1))
+
+export PATH=$PATH:${tmp_path}/bin:$(sudo find /opt -name "*gitbin*"):$${chef_bin_path}:$${chef_bin_embedded_path}
+
+workstation_user_name="${workstation_user_name}"
+workstation_user_pem="${workstation_user_pem}"
+workstation_org_pem="${workstation_org_pem}"
+workstation_org_url="${workstation_org_url}"
+workstation_org_name="$(echo $${workstation_org_url} | awk -F '/' '{print $5}')"
+
+chef_repo="$${HOME}/${chef_repo_path}"
+
+mkdir -p $${chef_repo}/.chef
+mkdir -p $${chef_repo}/cookbooks
+mkdir -p $${chef_repo}/policyfiles
+mkdir -p $${chef_repo}/environments
+mkdir -p $${chef_repo}/roles
+
+%{ if github_ssh_key != "" }
+mkdir -p $${HOME}/.ssh
+cat << EOF > $${HOME}/.ssh/github.pem
+${github_ssh_key}
+EOF
+
+chmod 600 $${HOME}/.ssh/github.pem
+
+if [[ -f $${HOME}/.bashrc ]]; then
+  if ! grep "alias git=" $${HOME}/.bashrc; then
+    echo "alias git=\"GIT_SSH=\"$${HOME}/ssh_cmd\" git\"" >> $${HOME}/.bashrc
+  fi
+echo 'ssh -o IdentitiesOnly=yes -i ~/.ssh/github.pem -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $*' >> $${HOME}/ssh_cmd
+chmod +x $${HOME}/ssh_cmd
+fi
+%{ endif }
+
+if [[ -f $${HOME}/.bashrc ]]; then
+  if ! grep "alias cw=" $${HOME}/.bashrc; then
+    echo "alias cw='cd $${chef_repo}'" >> $${HOME}/.bashrc
+  fi
+fi
+
+pushd $${chef_repo}
+
+cat << EOF > .chef/$${workstation_user_name}.pem
+$${workstation_user_pem}
+EOF
+
+cat << EOF > .chef/$${workstation_org_name}-validation.pem
+$${workstation_org_pem}
+EOF
+
+cat << EOF > .chef/knife.rb
+current_dir = File.dirname(__FILE__)
+log_level       :info
+log_location    STDOUT
+node_name       '$${workstation_user_name}'
+client_key      "#{current_dir}/$${workstation_user_name}.pem"
+validation_client_name "$${workstation_org_name}-validator"
+validation_key  "#{current_dir}/$${workstation_org_name}-validation.pem"
+chef_server_url "$${workstation_org_url}"
+cookbook_path   ["#{current_dir}/../cookbooks"]
+ssl_verify_mode ${chef_server_ssl_verify_mode}
+EOF
+
+%{ if chef_server_ssl_verify_mode == ":verify_none" ~}
+knife ssl fetch
+%{ endif ~}
+
+# create berksfiles and policyfile
+%{ for k in jsondecode(berksfiles) }
+cat << EOF > ${k.name} 
+source ${k.default_source}
+
+%{ for cookbook in keys(k.cookbooks) ~}
+cookbook '${ cookbook }'${k.cookbooks[cookbook] != "" ? ", ${k.cookbooks[cookbook]}" : ""}
+%{ endfor ~}
+EOF
+%{ endfor }
+
+%{ for k in jsondecode(policyfiles) }
+cat << EOF > policyfiles/${k.name}.rb
+name '${k.name}'
+
+default_source ${k.default_source}
+
+run_list ${jsonencode(k.run_list)}
+
+%{ for policy in keys(k.include_policy) }
+include_policy "${policy}", ${k.include_policy[policy]}
+%{ endfor }
+
+%{ for cookbook in keys(k.cookbooks) }
+cookbook '${ cookbook }'${k.cookbooks[cookbook] != "" ? ", ${k.cookbooks[cookbook]}" : ""}
+%{ endfor }
+%{if contains(keys(k), "default_attributes") }
+$($(ls /opt/*/embedded/bin/ruby|tail -1) ${tmp_path}/attribute_parser.rb '{"default_attributes": ${jsonencode(k.default_attributes)}}')
+%{ endif }
+%{if contains(keys(k), "override_attributes") }
+$($(ls /opt/*/embedded/bin/ruby|tail -1) ${tmp_path}/attribute_parser.rb '{"override_attributes": ${jsonencode(k.override_attributes)}}')
+%{ endif }
+EOF
+%{ endfor }
+
+# create roles and environments
+%{ for k in jsondecode(environments) }
+cat << EOF > environments/${k.name}.json
+{
+  "name": "${k.name}",
+  "description": "${k.description != "" ? k.description : "Created by Terraform" }",
+  %{ if length(keys(k.cookbook_versions)) > 0 }
+  "cookbook_versions": ${jsonencode(k.cookbook_versions)},
+  %{ endif }
+  %{ if length(keys(k.default_attributes)) > 0 }
+  "default_attributes": ${jsonencode(k.default_attributes)},
+  %{ endif }
+  %{ if length(keys(k.override_attributes)) > 0 }
+  "override_attributes": ${jsonencode(k.override_attributes)},
+  %{ endif }
+  "json_class": "Chef::Environment",
+  "chef_type": "environment"
+}
+EOF
+%{ endfor }
+
+%{ for k in jsondecode(roles) }
+cat << EOF > roles/${k.name}.json
+{
+  "name": "${k.name}",
+  "description": "${k.description != "" ? k.description : "Created by Terraform" }",
+  %{ if length(keys(k.default_attributes)) > 0 }
+  "default_attributes": ${jsonencode(k.default_attributes)},
+  %{ endif }
+  %{ if length(keys(k.override_attributes)) > 0 }
+  "override_attributes": ${jsonencode(k.override_attributes)},
+  %{ endif }
+  %{ if length(k.run_list) > 0 }
+  "run_list": ${jsonencode(k.run_list)},
+  %{ endif }
+  %{ if length(keys(k.env_run_list)) > 0 }
+  "env_run_lists": ${jsonencode(k.env_run_list)},
+  %{ endif }
+  "json_class": "Chef::Role",
+  "chef_type": "role"
+}
+EOF
+%{ endfor }
+pushd $${chef_repo}/cookbooks
+%{ for k in jsondecode(github_cookbooks) }
+%{ if github_ssh_key != "" }
+gdir=$(echo ${k} | awk -F '/' '{print $2}' | sed 's/\.git//')
+if [[ ! -d $${gdir} ]]; then
+  GIT_SSH="$${HOME}/ssh_cmd" git clone ${k}
+fi
+%{ else }
+gdir=$(echo ${k} | awk -F '/' '{print $2}' | sed 's/\.git//')
+if [[ ! -d $${gdir} ]]; then
+  git clone ${k} 
+fi
+%{ endif }
+%{ endfor }
+
+mkdir -p $${HOME}/${github_repos_path}
+pushd $${HOME}/${github_repos_path}
+%{ for k in jsondecode(github_repos) }
+%{ if github_ssh_key != "" }
+gdir=$(echo ${k} | awk -F '/' '{print $2}' | sed 's/\.git//')
+if [[ ! -d $${gdir} ]]; then
+  GIT_SSH="$${HOME}/ssh_cmd" git clone ${k}
+fi
+%{ else }
+gdir=$(echo ${k} | awk -F '/' '{print $2}' | sed 's/\.git//')
+if [[ ! -d $${gdir} ]]; then
+  git clone ${k} 
+fi
+%{ endif }  
+%{ endfor }  
+popd
+popd
+popd
+%{ else }
+%{ if wait_for_base }
+while (!(Test-Path "C:\setup.lock")) { Start-Sleep 10 }
+%{ endif }
+# ${module_input}
+
+$tmp_bin = "${tmp_path}\bin"
+if(!(test-path $tmp_bin)) {
+  New-Item -ItemType Directory -Force -Path $tmp_bin
+}
+
+$jq_path = "$${tmp_bin}\jq.exe"
+if(!(test-path $jq_path)) {
+  $ProgressPreference = 'SilentlyContinue'
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  Invoke-WebRequest ${jq_url} -OutFile $jq_path
+}
+
+$env:Path += ";$${tmp_bin}"
+$env:Path += ';c:\opscode\chef-workstation\bin'
+$env:Path += ';c:\opscode\chef-workstation\embedded\\bin'
+$env:Path += ';c:\opscode\chefdk\bin'
+$env:Path += ';c:\opscode\chefdk\embedded\bin'
+$env:Path += ";$${env:ProgramFiles(x86)}\Google\Chrome\Application"
+
+[System.Environment]::SetEnvironmentVariable('PATH',$env:Path,[System.EnvironmentVariableTarget]::User)
+
+$chrome_sc = @"
+start chrome.exe ${urls}
+"@
+
+Set-Content -Path $${HOME}\\Desktop\\start.bat -Value $chrome_sc
+
+$workstation_user_name="${workstation_user_name}"
+$workstation_user_pem="${workstation_user_pem}"
+$workstation_org_pem="${workstation_org_pem}"
+$workstation_org_url="${workstation_org_url}"
+
+$workstation_org_name = $workstation_org_url.split('/')[4]
+$chef_repo = "$${HOME}\\${chef_repo_path}"
+
+$chef_conf_path = "$${chef_repo}\.chef"
+$chef_cookbook_path = "$${chef_repo}\cookbooks"
+$chef_policies_path = "$${chef_repo}\policyfiles"
+$chef_environment_path = "$${chef_repo}\environments"
+$chef_roles_path = "$${chef_repo}\roles"
+
+if(!(test-path $chef_conf_path)) {
+  New-Item -ItemType Directory -Force -Path $chef_conf_path
+}
+if(!(test-path $chef_cookbook_path)) {
+  New-Item -ItemType Directory -Force -Path $chef_cookbook_path
+}
+if(!(test-path $chef_policies_path)) {
+  New-Item -ItemType Directory -Force -Path $chef_policies_path
+}
+if(!(test-path $chef_environment_path)) {
+  New-Item -ItemType Directory -Force -Path $chef_environment_path
+}
+if(!(test-path $chef_roles_path)) {
+  New-Item -ItemType Directory -Force -Path $chef_roles_path
+}
+
+Push-Location $${chef_repo}
+
+$knife_rb = @"
+current_dir = File.dirname(__FILE__)
+log_level       :info
+log_location    STDOUT
+node_name       '$${workstation_user_name}'
+client_key      "#{current_dir}/$${workstation_user_name}.pem"
+validation_client_name "$${workstation_org_name}-validator"
+validation_key  "#{current_dir}/$${workstation_org_name}-validation.pem"
+chef_server_url "$${workstation_org_url}"
+cookbook_path   ["#{current_dir}/../cookbooks"]
+ssl_verify_mode ${chef_server_ssl_verify_mode}
+"@
+
+
+Set-Content -Path .chef\\$${workstation_user_name}.pem -Value $workstation_user_pem
+Set-Content -Path .chef\\$${workstation_org_name}-validation.pem -Value $workstation_org_pem
+Set-Content -Path '.chef\knife.rb' -Value $knife_rb
+
+%{ if chef_server_ssl_verify_mode == ":verify_none" }
+knife ssl fetch
+%{ endif }
+
+%{ for k in jsondecode(berksfiles) }
+$berks = @"
+source ${k.default_source}
+
+%{ for cookbook in keys(k.cookbooks) ~}
+cookbook '${ cookbook }'${k.cookbooks[cookbook] != "" ? ", ${k.cookbooks[cookbook]}" : ""}
+%{ endfor ~}
+"@
+Set-Content -Path ${k.name} -Value $berks 
+%{ endfor }
+
+%{ for k in jsondecode(policyfiles) }
+$pol = @"
+name '${k.name}'
+
+default_source ${k.default_source}
+
+run_list ${jsonencode(k.run_list)}
+
+%{ for policy in keys(k.include_policy) }
+include_policy "${policy}", ${k.include_policy[policy]}
+%{ endfor }
+
+%{ for cookbook in keys(k.cookbooks) }
+cookbook '${ cookbook }'${k.cookbooks[cookbook] != "" ? ", ${k.cookbooks[cookbook]}" : ""}
+%{ endfor }
+%{if contains(keys(k), "default_attributes") }
+$(C:\opscode\*\embedded\bin\ruby.exe ${tmp_path}\\attribute_parser.rb ('{"default_attributes": ${jsonencode(k.default_attributes)}}' | ConvertTo-Json))
+%{ endif }
+%{if contains(keys(k), "override_attributes") }
+$(C:\opscode\*\embedded\bin\ruby.exe ${tmp_path}\\attribute_parser.rb ('{"override_attributes": ${jsonencode(k.override_attributes)}}' | ConvertTo-Json))
+%{ endif }
+"@
+$pol = $pol.split("~~~")
+$pol = $pol.Trim()
+Set-Content -Path policyfiles\\${k.name}.rb -Value $pol
+%{ endfor }
+
+%{ for k in jsondecode(environments) }
+$env_file = @"
+{
+  "name": "${k.name}",
+  "description": "${k.description != "" ? k.description : "Created by Terraform" }",
+  %{ if length(keys(k.cookbook_versions)) > 0 }
+  "cookbook_versions": ${jsonencode(k.cookbook_versions)},
+  %{ endif }
+  %{ if length(keys(k.default_attributes)) > 0 }
+  "default_attributes": ${jsonencode(k.default_attributes)},
+  %{ endif }
+  %{ if length(keys(k.override_attributes)) > 0 }
+  "override_attributes": ${jsonencode(k.override_attributes)},
+  %{ endif }
+  "json_class": "Chef::Environment",
+  "chef_type": "environment"
+}
+"@
+
+Set-Content -Path environments\\${k.name}.json -Value $env_file
+%{ endfor }
+
+%{ for k in jsondecode(roles) }
+$role_file = @"
+{
+  "name": "${k.name}",
+  "description": "${k.description != "" ? k.description : "Created by Terraform" }",
+  %{ if length(keys(k.default_attributes)) > 0 }
+  "default_attributes": ${jsonencode(k.default_attributes)},
+  %{ endif }
+  %{ if length(keys(k.override_attributes)) > 0 }
+  "override_attributes": ${jsonencode(k.override_attributes)},
+  %{ endif }
+  %{ if length(k.run_list) > 0 }
+  "run_list": ${jsonencode(k.run_list)},
+  %{ endif }
+  %{ if length(keys(k.env_run_list)) > 0 }
+  "env_run_lists": ${jsonencode(k.env_run_list)},
+  %{ endif }
+  "json_class": "Chef::Role",
+  "chef_type": "role"
+}
+"@
+Set-Content -Path roles\\${k.name}.json -Value $role_file
+%{ endfor}
+
+%{ if github_ssh_key != "" }
+if(!(test-path $${HOME}/.ssh)) {
+  New-Item -ItemType Directory -Force -Path $${HOME}/.ssh
+}
+$ssh_file = @"
+${github_ssh_key}
+"@
+
+Set-Content -Path $${HOME}/.ssh/github.pem -Value $ssh_file
+$env:GIT_SSH_COMMAND = 'ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i $${HOME}/.ssh/github.pem'
+[System.Environment]::SetEnvironmentVariable('GIT_SSH_COMMAND','ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i $${HOME}/.ssh/github.pem',[System.EnvironmentVariableTarget]::User)
+
+%{ endif }
+
+%{ if server_ssh_key != "" }
+if(!(test-path $${HOME}/.ssh)) {
+  New-Item -ItemType Directory -Force -Path $${HOME}/.ssh
+}
+$ssh_file_server = @"
+${server_ssh_key}
+"@
+
+Set-Content -Path $${HOME}/.ssh/server.pem -Value $ssh_file_server
+
+%{ endif }
+Push-Location $chef_cookbook_path
+%{ for k in jsondecode(github_cookbooks) }
+git clone ${k} 
+%{ endfor }
+
+if(!(test-path $${HOME}/${github_repos_path})) {
+  New-Item -ItemType Directory -Force -Path $${HOME}/${github_repos_path}
+}
+Push-Location $${HOME}/${github_repos_path}
+%{ for k in jsondecode(github_repos) }
+git clone ${k} 
+%{ endfor }  
+Pop-Location
+Pop-Location
+Pop-Location
+%{ endif }

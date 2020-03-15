@@ -1,0 +1,10 @@
+%{ if system == "linux" }
+#!/bin/bash
+set -exu
+exec > ${tmp_path}/restart_workstion_script.log 2>&1
+sudo shutdown -r +1
+echo 0
+%{ else }
+shutdown /r /f /t 5 /c "forced reboot"
+net stop WinRM
+%{ endif }

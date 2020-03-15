@@ -1,0 +1,274 @@
+module Servers
+
+  def workstation_user_pem
+    <<~EOF
+${workstation_user_pem}
+    EOF
+  end
+
+  def workstation_org_pem
+    <<~EOF
+${workstation_org_pem}
+    EOF
+  end
+
+  def github_ssh_key
+    <<~EOF
+${github_ssh_key} 
+    EOF
+  end
+
+  def server_ssh_key
+    <<~EOF
+${server_ssh_key} 
+    EOF
+  end
+
+  def github_ssh_key_path
+    "#{ssh_path}/github.pem"
+  end
+
+  def github_user
+    '${bootstrap_github_user}'
+  end
+
+  def github_email
+    '${bootstrap_github_email}'
+  end
+
+  def ssh_path
+    "#{ENV['HOME']}/.ssh"
+  end
+
+  def workstation_user_name
+    '${workstation_user_name}'
+  end
+
+  def workstation_org_url
+    '${workstation_org_url}'
+  end
+
+  def workstation_org_name
+    '${workstation_org_url}'.split('/')[-1]
+  end
+
+  def chef_config_path
+    "#{ENV['HOME']}/.chef"
+  end
+
+  def workstation_user_pem_path
+    "#{chef_config_path}/#{workstation_user}.pem"
+  end
+
+  def workstation_org_pem_path
+    "#{chef_config_path}/#{workstation_org_name}-validation.pem"
+  end
+
+  def chef_repo_path
+    "#{ENV['HOME']}/${chef_repo_path}"
+  end
+
+  def chef_repo_shaddow_cookbooks_path
+    "#{chef_repo_path}/.cookbooks"
+  end
+
+  def chef_repo_shaddow_policyfile_path
+    "#{chef_repo_path}/.policyfiles"
+  end
+
+  def chef_repo_cookbooks_path
+    "#{chef_repo_path}/cookbooks"
+  end
+
+  def chef_repo_profiles_path
+    "#{chef_repo_path}/profiles"
+  end
+
+  def chef_repo_policyfiles_path
+    "#{chef_repo_path}/policyfiles"
+  end
+
+  def chef_repo_environments_path
+    "#{chef_repo_path}/environments"
+  end
+
+  def chef_repo_roles_path
+    "#{chef_repo_path}/roles"
+  end
+
+  def chef_server_ssl_verify_mode
+    '${chef_server_ssl_verify_mode}'
+  end
+
+  def src_repo_path
+    "#{ENV['HOME']}/${src_repo_path}"
+  end
+
+  def compliance_login_config_path
+    "##{ENV['HOME']}/.inspec/compliance/config.json"
+  end
+
+  def chef_config
+  <<~EOF
+log_level       :info
+log_location    STDOUT
+node_name       "#{workstation_user_name}"
+client_key      "#{chef_config_path}/#{workstation_user_name}.pem"
+validation_client_name "#{workstation_org_name}-validator"
+validation_key  "#{chef_config_path}/#{workstation_org_name}-validation.pem"
+chef_server_url "#{workstation_org_url}"
+cookbook_path   ["#{chef_repo_path}/cookbooks"]
+ssl_verify_mode #{chef_server_ssl_verify_mode}
+  EOF
+  end
+
+  def automate_url
+    '${automate_url}'
+  end
+
+  def automate_user
+    '${automate_user}'
+  end
+
+  def automate_token
+    '${automate_token}'
+  end
+
+  def client_version
+    '${bootstrap_client_version}'
+  end
+
+  def winrm_username
+    '${bootstrap_winrm_username}'
+  end
+
+  def winrm_password
+    '${bootstrap_winrm_password}'
+  end
+
+  def home_bin_path
+    "#{ENV['HOME']}/bin/"
+  end
+
+  def ssh_cmd_name
+    'ssh_cmd'
+  end
+
+  def ssh_cmd_file
+    "#{home_bin_path}/#{ssh_cmd_name}"
+  end
+
+  def ssh_cmd
+    "ssh -o IdentitiesOnly=yes -i #{ssh_key_path} -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $*"
+  end
+
+  def ssh_username
+    '${bootstrap_ssh_username}'
+  end
+
+  def ssh_key_path
+    '${bootstrap_ssh_key_path}'
+  end
+
+  def win_ips
+    ${jsonencode(bootstrap_win_ips)}
+  end
+
+  def lin_ips
+    ${jsonencode(bootstrap_lin_ips)}
+  end
+
+  def dev_count
+    ${bootstrap_dev_count}
+  end
+
+  def stage_count
+    ${bootstrap_stage_count}
+  end
+
+  def prod_count
+    ${bootstrap_prod_count}
+  end
+
+  def concat_ip
+    servers = {}
+
+    (lin_ips + win_ips).each do |ip|
+      servers["srv-#{ip.gsub(".","-")}"] = ip
+    end
+
+    return servers
+  end
+
+  def concat_os
+    servers = {}
+
+    win_ips.each_with_index do |ip,i|
+      servers["windows-srv-#{i+1}"] = ip
+    end
+    lin_ips.each_with_index do |ip,i|
+      servers["linux-srv-#{i+1}"] = ip
+    end
+    return servers
+  end
+
+  def concat_os_sdl
+    servers = {}
+
+    win_ips.slice(0,prod_count).each_with_index do |ip,i|
+      servers["windows-prod-#{i}"] = ip
+    end
+
+    win_ips.slice(prod_count,stage_count).each_with_index do |ip,i|
+      servers["windows-stage-#{i}"] = ip
+    end
+
+    win_ips.slice(prod_count+stage_count,dev_count).each_with_index do |ip,i|
+      servers["windows-dev-#{i}"] = ip
+    end
+
+    lin_ips.slice(0,prod_count).each_with_index do |ip,i|
+      servers["linux-prod-#{i}"] = ip
+    end
+
+    lin_ips.slice(prod_count,stage_count).each_with_index do |ip,i|
+      servers["linux-stage-#{i}"] = ip
+    end
+
+    lin_ips.slice(prod_count+stage_count,dev_count).each_with_index do |ip,i|
+      servers["linux-dev-#{i}"] = ip
+    end
+    return servers
+  end
+
+  def get_servers_os_sdl(type)
+    concat_os_sdl.select {|x| x =~ /#{type}/}
+  end
+
+  def get_servers_os(type)
+    concat_os.select {|x| x =~ /#{type}/}
+  end
+
+  def get_servers_ip
+    concat_os.select
+  end
+
+  def file_write(path,string,mode=0644)
+    IO.write(path,string)
+    File.chmod(mode,path)
+  end
+
+  def create_dir(path,mode=0775)
+    require 'fileutils'
+    FileUtils.mkdir_p path
+    File.chmod(mode,path)
+  end
+
+  def url_fget(path,url)
+    require 'open-uri'
+    File.open(path, "wb") do |file|
+      file.write open(url).read
+    end
+    File.chmod(0744,path)
+  end
+end
