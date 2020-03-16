@@ -14,13 +14,13 @@ ${workstation_org_pem}
 
   def github_ssh_key
     <<~EOF
-${github_ssh_key} 
+${github_ssh_key}
     EOF
   end
 
   def server_ssh_key
     <<~EOF
-${server_ssh_key} 
+${server_ssh_key}
     EOF
   end
 
@@ -56,8 +56,12 @@ ${server_ssh_key}
     "#{ENV['HOME']}/.chef"
   end
 
+  def chef_config_file
+    "#{chef_config_path}/config.rb"
+  end
+
   def workstation_user_pem_path
-    "#{chef_config_path}/#{workstation_user}.pem"
+    "#{chef_config_path}/#{workstation_user_name}.pem"
   end
 
   def workstation_org_pem_path
@@ -72,7 +76,7 @@ ${server_ssh_key}
     "#{chef_repo_path}/.cookbooks"
   end
 
-  def chef_repo_shaddow_policyfile_path
+  def chef_repo_shaddow_policyfiles_path
     "#{chef_repo_path}/.policyfiles"
   end
 
@@ -105,7 +109,7 @@ ${server_ssh_key}
   end
 
   def compliance_login_config_path
-    "##{ENV['HOME']}/.inspec/compliance/config.json"
+    "#{ENV['HOME']}/.inspec/compliance/config.json"
   end
 
   def chef_config
@@ -147,7 +151,7 @@ ssl_verify_mode #{chef_server_ssl_verify_mode}
   end
 
   def home_bin_path
-    "#{ENV['HOME']}/bin/"
+    "#{ENV['HOME']}/bin"
   end
 
   def ssh_cmd_name
@@ -159,7 +163,7 @@ ssl_verify_mode #{chef_server_ssl_verify_mode}
   end
 
   def ssh_cmd
-    "ssh -o IdentitiesOnly=yes -i #{ssh_key_path} -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $*"
+    "ssh -o IdentitiesOnly=yes -i #{github_ssh_key_path} -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $*"
   end
 
   def ssh_username
@@ -167,7 +171,7 @@ ssl_verify_mode #{chef_server_ssl_verify_mode}
   end
 
   def ssh_key_path
-    '${bootstrap_ssh_key_path}'
+    "#{ssh_path}/server.pem"
   end
 
   def win_ips
