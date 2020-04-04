@@ -101,6 +101,7 @@ resource "null_resource" "setup_workstation" {
     password    = length(local.user_passes) > 0 ? local.user_passes[count.index] : null
     private_key = length(local.user_private_keys) > 0 ? file(local.user_private_keys[count.index]) : null
     host        = local.ips[count.index] 
+    timeout     = var.timeout
   }
 
   provisioner "remote-exec" {
@@ -153,6 +154,6 @@ resource "null_resource" "reboot_workstation" {
     inline = [
       "${local.cmd} ${local.restart_cmd}"
     ]
-    on_failure = "continue"
+    on_failure = continue
   }
 }

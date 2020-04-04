@@ -52,6 +52,11 @@ variable "user_private_keys" {
   default     = []
 }
 
+variable "timeout" {
+  description = "Time out for the conneciton"
+  type        = string
+  default     = "5m"
+}
 ############ misc ###############################
 
 variable "system_type" {
